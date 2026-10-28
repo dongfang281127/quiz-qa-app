@@ -1,65 +1,92 @@
-# 📚 高级智能题库系统 (Quiz Master) 🐍
+# Quiz QA
 
-![Flutter](https://img.shields.io/badge/Flutter-%2302569B.svg?style=for-the-badge&logo=Flutter&logoColor=white)
-![Dart](https://img.shields.io/badge/dart-%230175C2.svg?style=for-the-badge&logo=dart&logoColor=white)
-![Android](https://img.shields.io/badge/Android-3DDC84?style=for-the-badge&logo=android&logoColor=white)
+English | [简体中文](README.zh-CN.md)
 
-这是一款基于 **Flutter** 构建的高性能刷题应用。它不仅拥有精致的 UI 交互，更集成了练习、反馈与社交讨论于一体，是学习与测试的绝佳利器。
+An Android quiz app built with Flutter, backed by a Cloudflare Worker and a D1 (SQLite) database.
 
----
+## Features
 
-## ✨ 核心功能亮点
+- Sign up and sign in. Sessions use JWT; passwords are hashed with PBKDF2-SHA256.
+- Question banks organised by subject and chapter, so two subjects can both have a chapter called "Basics" without mixing questions.
+- Sequential or shuffled practice. Entering a chapter jumps to the first unanswered question.
+- Per-chapter progress bar showing correct, wrong, and untouched questions.
+- Bookmark questions; a bookmarked question opens directly in the practice screen.
+- Comments under each question, plus an in-app mailbox to the bank author.
+- Upload your own banks, edit or delete questions, import from an Excel/CSV template.
+- Light and dark themes.
 
-* **📖 全能练习模式**
-    * **顺序刷题**：稳扎稳打，按部就班掌握知识点。
-    * **随机挑战**：打乱顺序，模拟真实考试场景。
-* **📈 智能数据统计**
-    * **实时正确率**：答题过程中即时计算，进度一目了然。
-    * **练习报告**：记录你的成长轨迹。
-* **💬 社交讨论区**
-    * **题目评论**：每道题下方都有支持思路交流与纠错的评论功能。
-* **📬 意见信箱**
-    * **反馈系统**：内置信箱功能，用户建议直达开发者，持续优化体验。
-* **🎨 沉浸式体验**
-    * 拥有深邃神秘的配色方案，带来极致的阅读舒适感与流畅的动效切换。
+## Stack
 
----
+| Layer | Technology |
+| --- | --- |
+| App | Flutter / Dart |
+| Backend | Cloudflare Workers, one `fetch` handler |
+| Database | Cloudflare D1 (SQLite) |
+| Auth | JWT HS256, PBKDF2-SHA256 |
 
-## 🚀 快速上手
+## Repository layout
 
-### 环境要求
-- Flutter SDK (Latest Version)
-- Android Studio / VS Code
+```
+lib/                      Flutter app
+  pages/                  screens
+  services/               API client and one service per domain
+  widgets/                shared widgets
+  models/ utils/ theme/
+test/                     unit and widget tests
+wenda-worker/             Cloudflare Worker
+  src/index.js            router and handlers
+  migrations/             D1 schema, applied in filename order
+  tools/                  smoke test, route probe, remote check
+```
 
-### 运行步骤
-1. **克隆项目**
-   ```bash
-   git clone https://github.com/dongfang281127/flutter-quiz-app-android.git
+## Run the app
 
-2. **获取依赖**
-   ```bash
-   flutter pub get
+```bash
+git clone https://github.com/dongfang281127/quiz-qa-app.git
+cd quiz-qa-app
+flutter pub get
+```
 
-3. **启动应用**
-   ```bash
-   flutter run
+Set `API_BASE_URL` in `.env` to your Worker origin:
 
----
+```
+API_BASE_URL=https://your-worker.example.com
+```
 
-## 🛠️ 技术栈
+Then:
 
-* **Framework:** Flutter
+```bash
+flutter run
+flutter build apk --release
+```
 
-* **Language:** Dart
+## Run the backend
 
-* **Architecture:** 简洁高效的代码逻辑，易于维护与扩展
-  
----
+```bash
+cd wenda-worker
+npm install
+npx wrangler d1 migrations apply wenda-db --remote
+npx wrangler secret put JWT_SECRET
+npx wrangler deploy
+```
 
-## 📧 联系与支持
+The five migrations must run in filename order. `0003` adds a column with `ALTER TABLE ADD COLUMN`, which is not repeatable, so a database that was created by hand earlier needs its `d1_migrations` bookkeeping fixed first. See `wenda-worker/README.md` for the exact steps and for the SQL queries that confirm each migration landed.
 
-如果你在使用过程中发现任何 Bug 或有更好的创意，欢迎通过应用内的 **信箱** 功能联系我，或者直接在 GitHub 提交 Issue！
-  
----
+## Verify
 
-## ⭐ 如果这个项目对你有帮助，欢迎点个 Star 支持一下！
+```bash
+flutter analyze
+flutter test
+```
+
+```bash
+cd wenda-worker
+npm test                              # SQL checks, handler smoke test, route probe
+node tools/verify_remote.mjs --email you@example.com --password '***'
+```
+
+`verify_remote.mjs` separates two failure modes: a 404 saying the route does not exist means the Worker is behind the source, while a 500 points at a missing migration.
+
+## Bug reports
+
+Open an issue, or use the in-app mailbox.
