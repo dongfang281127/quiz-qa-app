@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../models/bank_taxonomy.dart';
 import '../models/question.dart';
+import '../services/app_events.dart';
 import '../services/bank_service.dart';
 import '../theme/app_colors.dart';
 import '../utils/error_text.dart';
@@ -178,6 +179,8 @@ class _EditQuestionPageState extends State<EditQuestionPage> {
         );
       }
       if (!mounted) return;
+      // 新增/改题都会改动题库的题数或章节统计，喊一声让列表页跟上。
+      AppEvents.banksChanged();
       Navigator.pop(context, _isCreate ? 'created' : 'saved');
     } catch (e) {
       if (mounted) _msg(friendlyError(e), isError: true);
@@ -234,6 +237,7 @@ class _EditQuestionPageState extends State<EditQuestionPage> {
     try {
       await _service.deleteQuestion(q.id);
       if (!mounted) return;
+      AppEvents.banksChanged();
       Navigator.pop(context, 'deleted');
     } catch (e) {
       if (mounted) _msg(friendlyError(e), isError: true);

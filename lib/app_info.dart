@@ -4,9 +4,9 @@ class AppInfo {
   const AppInfo._();
 
   static const String appName = 'Q&A';
-  static const String version = '1.7.1';
-  static const int build = 10;
+  static const String version = '2.0.0';
+  static const int build = 11;
 
-  /// 例如「Q&A v1.7.1 (10)」
+  /// 例如「Q&A v2.0.0 (11)」
   static const String display = '$appName v$version ($build)';
 }

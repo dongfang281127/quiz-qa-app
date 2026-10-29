@@ -106,10 +106,11 @@ class _ProfilePageState extends State<ProfilePage> {
     );
     if (confirmed != true) return;
 
+    // deleteAccount 内部就会 signOut 并通知回登录页，所以标记要在它之前打，
+    // 否则 main 会把「自己注销」误判成被动登出，多弹一条“登录已失效”。
+    MyApp.markSignOutRequested();
     try {
       await AuthService.instance.deleteAccount();
-      MyApp.markSignOutRequested();
-      await AuthService.instance.signOut();
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context)

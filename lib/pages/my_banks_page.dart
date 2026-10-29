@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../models/bank.dart';
+import '../services/app_events.dart';
 import '../services/bank_service.dart';
 import '../theme/app_colors.dart';
 import '../utils/error_text.dart';
@@ -29,13 +30,28 @@ class _MyBanksPageState extends State<MyBanksPage> {
   void initState() {
     super.initState();
     _load();
+    // 上传页新建了题库、搜索页删了题库，这里要立刻反映出来。
+    AppEvents.banks.addListener(_onDataChanged);
   }
 
-  Future<void> _load() async {
-    setState(() {
-      _status = AsyncStatus.loading;
-      _errorText = null;
-    });
+  @override
+  void dispose() {
+    AppEvents.banks.removeListener(_onDataChanged);
+    super.dispose();
+  }
+
+  void _onDataChanged() {
+    if (!mounted) return;
+    _load(silent: true);
+  }
+
+  Future<void> _load({bool silent = false}) async {
+    if (!silent) {
+      setState(() {
+        _status = AsyncStatus.loading;
+        _errorText = null;
+      });
+    }
     try {
       final banks = await _service.fetchMyBanks();
       if (!mounted) return;
@@ -44,7 +60,7 @@ class _MyBanksPageState extends State<MyBanksPage> {
         _status = banks.isEmpty ? AsyncStatus.empty : AsyncStatus.data;
       });
     } catch (e) {
-      if (!mounted) return;
+      if (!mounted || silent) return;
       setState(() {
         _status = AsyncStatus.error;
         _errorText = friendlyError(e);
@@ -70,6 +86,7 @@ class _MyBanksPageState extends State<MyBanksPage> {
           for (final b in _banks) b.id == bank.id ? b.copyWith(name: saved) : b,
         ];
       });
+      AppEvents.banksChanged(); // 搜索页/藏书阁里的旧名字一起更新
       _msg('题库已改名为《$saved》');
     } catch (e) {
       if (mounted) _msg(friendlyError(e), isError: true);

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../models/bank.dart';
+import '../services/app_events.dart';
 import '../services/auth_service.dart';
 import '../services/bank_service.dart';
 import '../theme/app_colors.dart';
@@ -43,6 +44,9 @@ class _SearchPageState extends State<SearchPage> {
     super.initState();
     _refresh();
     _scrollController.addListener(_onScroll);
+    // 保活页面：别处新建/删除题库、增删收藏都要能反映过来。
+    AppEvents.banks.addListener(_onDataChanged);
+    AppEvents.favorites.addListener(_onDataChanged);
   }
 
   @override
@@ -50,7 +54,14 @@ class _SearchPageState extends State<SearchPage> {
     _searchController.dispose();
     _scrollController.dispose();
     _debounce?.cancel();
+    AppEvents.banks.removeListener(_onDataChanged);
+    AppEvents.favorites.removeListener(_onDataChanged);
     super.dispose();
+  }
+
+  void _onDataChanged() {
+    if (!mounted || _isLoading) return; // 正在拉就不叠加
+    _refresh(silent: true);
   }
 
   void _onScroll() {
@@ -61,9 +72,9 @@ class _SearchPageState extends State<SearchPage> {
     }
   }
 
-  Future<void> _refresh() async {
+  Future<void> _refresh({bool silent = false}) async {
     setState(() {
-      _isLoading = true;
+      if (!silent) _isLoading = true;
       _errorText = null;
       _page = 0;
       _hasMore = true;
@@ -81,12 +92,20 @@ class _SearchPageState extends State<SearchPage> {
     try {
       final (banks, hasMore) =
           await _bankService.fetchBanks(keyword: _searchController.text, page: page);
+      // 首页刷新时把收藏集合也拉一遍：以前这里从不加载，
+      // 所以明明收藏过的题库，搜索页上的书签图标还是「未收藏」。
+      final ids = replace ? await _bankService.fetchFavoriteIds() : null;
       if (!mounted) return;
       setState(() {
         _page = page;
         _hasMore = hasMore;
         if (replace) {
           _banks = banks;
+          if (ids != null) {
+            _favoriteIds
+              ..clear()
+              ..addAll(ids);
+          }
         } else {
           final existing = _banks.map((b) => b.id).toSet();
           _banks.addAll(banks.where((b) => !existing.contains(b.id)));
@@ -122,12 +141,14 @@ class _SearchPageState extends State<SearchPage> {
     try {
       if (wasFavorite) {
         await _bankService.removeFavorite(bank.id);
+        AppEvents.favoritesChanged(); // 藏书阁要跟着掉
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(content: Text('已取消收藏《${bank.name}》')));
         }
       } else {
         await _bankService.addFavorite(bank.id);
+        AppEvents.favoritesChanged(); // 藏书阁立刻能看到新收藏
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(content: Text('已收藏《${bank.name}》')));
@@ -168,6 +189,8 @@ class _SearchPageState extends State<SearchPage> {
         _banks.removeWhere((b) => b.id == bank.id);
         _favoriteIds.remove(bank.id);
       });
+      AppEvents.banksChanged(); // 「我的」里的题库列表、藏书阁都要跟上
+      AppEvents.favoritesChanged();
       ScaffoldMessenger.of(context)
           .showSnackBar(SnackBar(content: Text('题库《${bank.name}》已删除')));
     } catch (e) {
@@ -196,6 +219,7 @@ class _SearchPageState extends State<SearchPage> {
         final i = _banks.indexWhere((b) => b.id == bank.id);
         if (i >= 0) _banks[i] = _banks[i].copyWith(name: saved);
       });
+      AppEvents.banksChanged();
       ScaffoldMessenger.of(context)
           .showSnackBar(SnackBar(content: Text('题库已改名为《$saved》')));
     } catch (e) {

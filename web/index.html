@@ -81,53 +81,7 @@
       if (boot) boot.remove();
     });
   </script>
-  <!-- 独立打开时的返回出口；被站点 iframe 内嵌时自动隐藏 -->
-  <style>
-    #station-back {
-      position: fixed;
-      left: 14px;
-      bottom: 14px;
-      z-index: 2147483000;
-      display: inline-flex;
-      align-items: center;
-      gap: 7px;
-      padding: 9px 14px;
-      border-radius: 999px;
-      font: 600 12.5px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", sans-serif;
-      color: #0F2E24;
-      background: rgba(255, 255, 255, .93);
-      border: 1px solid rgba(15, 46, 36, .14);
-      box-shadow: 0 10px 26px -14px rgba(8, 32, 26, .55);
-      text-decoration: none;
-      -webkit-backdrop-filter: blur(10px);
-      backdrop-filter: blur(10px);
-      transition: transform .18s ease, box-shadow .18s ease;
-    }
-    #station-back:hover { transform: translateY(-1px); box-shadow: 0 14px 30px -14px rgba(8, 32, 26, .6); }
-    @media (prefers-color-scheme: dark) {
-      #station-back { color: #CFF3DC; background: rgba(16, 34, 27, .9); border-color: rgba(143, 184, 155, .28); }
-    }
-    body.embedded #station-back { display: none; }
-  </style>
-  <a id="station-back" href="/quiz/quiz_home.html">
-    <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M11 6l-6 6 6 6"/></svg>
-    返回空间站
-  </a>
 
-  <script>
-    // 被站点 iframe 内嵌时（window.top 不是自己），把返回按钮藏掉，避免和外层工具条重复
-    if (window.self !== window.top) {
-      document.body.classList.add('embedded');
-    }
-    // 独立打开时点返回，优先走浏览器历史，兜底回介绍页
-    document.getElementById('station-back').addEventListener('click', function (e) {
-      if (window.history.length > 1) {
-        e.preventDefault();
-        window.history.back();
-        setTimeout(function () { location.href = '/quiz/quiz_home.html'; }, 400);
-      }
-    });
-  </script>
   <script src="flutter_bootstrap.js" async></script>
 </body>
 </html>

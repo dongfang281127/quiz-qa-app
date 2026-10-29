@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../models/question.dart';
+import '../services/app_events.dart';
 import '../services/bank_service.dart';
 import '../services/exam_service.dart';
 import '../theme/app_colors.dart';
@@ -57,6 +58,7 @@ class _QuestionFavoritesPageState extends State<QuestionFavoritesPage> {
     if (id == null) return;
     try {
       await _service.removeQuestionFavorite(id);
+      AppEvents.favoritesChanged(); // 考场的星标、别处的收藏数一起更新
       if (mounted) {
         setState(() => _items.removeWhere((e) => e['question_id'] == id));
       }

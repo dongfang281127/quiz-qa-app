@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../models/bank.dart';
+import '../services/app_events.dart';
 import '../services/bank_service.dart';
 import '../theme/app_colors.dart';
 import '../utils/error_text.dart';
@@ -32,13 +33,31 @@ class _LibraryPageState extends State<LibraryPage> {
   void initState() {
     super.initState();
     _load();
+    // 这个页面被 IndexedStack 保活着，别处收藏/取消收藏不会重建它，
+    // 所以挂监听：收藏一变就在后台静默重拉，切回来就是新的。
+    AppEvents.favorites.addListener(_onDataChanged);
+    AppEvents.banks.addListener(_onDataChanged);
   }
 
-  Future<void> _load() async {
-    setState(() {
-      _status = AsyncStatus.loading;
-      _errorText = '';
-    });
+  @override
+  void dispose() {
+    AppEvents.favorites.removeListener(_onDataChanged);
+    AppEvents.banks.removeListener(_onDataChanged);
+    super.dispose();
+  }
+
+  void _onDataChanged() {
+    if (!mounted) return;
+    _load(silent: true);
+  }
+
+  Future<void> _load({bool silent = false}) async {
+    if (!silent) {
+      setState(() {
+        _status = AsyncStatus.loading;
+        _errorText = '';
+      });
+    }
     try {
       final banks = await _bankService.fetchFavoriteBanks();
       final ids = await _bankService.fetchFavoriteIds();
@@ -50,6 +69,8 @@ class _LibraryPageState extends State<LibraryPage> {
       });
     } catch (e) {
       if (!mounted) return;
+      // 静默刷新失败就保留旧列表，不把页面打成错误态。
+      if (silent) return;
       setState(() {
         _errorText = friendlyError(e);
         _status = AsyncStatus.error;
@@ -65,6 +86,7 @@ class _LibraryPageState extends State<LibraryPage> {
     });
     try {
       await _bankService.removeFavorite(bank.id);
+      AppEvents.favoritesChanged(); // 搜索页的收藏角标也要跟着灭
     } catch (e) {
       if (!mounted) return;
       _restoreLocally(bank);
@@ -81,6 +103,7 @@ class _LibraryPageState extends State<LibraryPage> {
           try {
             await _bankService.addFavorite(bank.id);
             if (!mounted) return;
+            AppEvents.favoritesChanged();
             _restoreLocally(bank);
           } catch (e) {
             if (!mounted) return;

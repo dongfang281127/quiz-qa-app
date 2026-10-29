@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../models/bank.dart';
 import '../models/bank_taxonomy.dart';
 import '../models/question.dart';
+import '../services/app_events.dart';
 import '../services/bank_service.dart';
 import '../theme/app_colors.dart';
 import '../utils/error_text.dart';
@@ -110,6 +111,7 @@ class _ManageBankPageState extends State<ManageBankPage> {
       final saved = await _service.renameBank(_bank.id, name);
       if (!mounted) return;
       setState(() => _bank = _bank.copyWith(name: saved));
+      AppEvents.banksChanged();
       _msg('题库已改名为《$saved》');
     } catch (e) {
       if (mounted) _msg(friendlyError(e), isError: true);

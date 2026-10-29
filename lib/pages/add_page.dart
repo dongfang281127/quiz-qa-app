@@ -4,6 +4,7 @@ import 'package:spreadsheet_decoder/spreadsheet_decoder.dart';
 import 'package:flutter/foundation.dart';
 
 import '../models/bank.dart';
+import '../services/app_events.dart';
 import '../services/auth_service.dart';
 import '../services/bank_service.dart';
 import '../theme/app_colors.dart';
@@ -296,9 +297,11 @@ class _AddPageState extends State<AddPage> {
 
       if (_mode == UploadMode.create) {
         _groupNameCtrl.clear();
-      } else {
-        await _loadMyBanks(); // 追加后题数变了，刷新下拉里的数字
       }
+      // 新建/追加都算题库变了：首页、搜索、我的题库、下拉里的题数都要跟上。
+      // 以前这里什么都不通知，页面又是保活的，只能杀掉进程重启才看到新题库。
+      AppEvents.banksChanged();
+      await _loadMyBanks();
     } catch (e) {
       if (mounted) _showMsg(friendlyError(e), isError: true);
     } finally {

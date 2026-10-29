@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../models/bank.dart';
 import '../models/question.dart';
 import '../services/api_client.dart';
+import '../services/app_events.dart';
 import '../services/auth_service.dart';
 import '../services/bank_service.dart';
 import '../services/exam_service.dart';
@@ -313,6 +314,7 @@ class _ExamPageState extends State<ExamPage> {
       } else {
         await _examService.addQuestionFavorite(q.id);
       }
+      AppEvents.favoritesChanged(); // 「我的 → 收藏的题目」立刻同步
     } catch (e) {
       if (mounted) {
         setState(() {

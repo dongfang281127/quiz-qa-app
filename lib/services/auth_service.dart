@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import '../models/bank.dart';
 import '../utils/error_text.dart';
 import 'api_client.dart';
+import 'app_events.dart';
 
 /// 登录用户（对应后端 users 表对外暴露的字段）。
 class AuthUser {
@@ -67,6 +68,7 @@ class AuthService {
   Future<void> _handleUnauthorized() async {
     await ApiClient.instance.setToken(null);
     currentUser.value = null;
+    AppEvents.accountChanged();
     if (!_signedOutController.isClosed) _signedOutController.add(null);
   }
 
@@ -103,6 +105,8 @@ class AuthService {
     final user = AuthUser.fromMap(map);
     await ApiClient.instance.setToken(token);
     currentUser.value = user;
+    // 换了账号：保活着的首页/搜索/我的题库都得重新拉自己的数据。
+    AppEvents.accountChanged();
     return user;
   }
 
@@ -160,8 +164,13 @@ class AuthService {
     await signOut();
   }
 
+  /// 主动退出。
+  /// 必须和被动登出走同一个出口：main 只监听 onSignedOut 来做「清栈回登录页」，
+  /// 以前这里清完 token 不发事件，于是界面停在原页面，杀掉进程重启才回到登录页。
   Future<void> signOut() async {
     await ApiClient.instance.setToken(null);
     currentUser.value = null;
+    AppEvents.accountChanged();
+    if (!_signedOutController.isClosed) _signedOutController.add(null);
   }
 }
