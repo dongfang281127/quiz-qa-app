@@ -47,3 +47,26 @@ app.*.map.json
 
 # ... 之前的配置
 .env
+
+# Node / Cloudflare Worker
+wenda-worker/node_modules/
+wenda-worker/.wrangler/
+wenda-worker/.dev.vars
+
+# 本地临时与工具产物
+.tmp_pip/
+pip_tmp/
+acl_out/
+pipmods/
+pypdf.whl
+pypdf.zip
+src_txt/
+pdf_text.txt
+images/
+android/settings.gradle.bak
+assets/icon/app_icon_prev.png
+
+# 题库源数据（不入库）
+/样本.xlsx
+/西综错题_新.xlsx
+/西综错题_终版.xlsx

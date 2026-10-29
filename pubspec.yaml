@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.0.0+1
+version: 1.7.1+10
 
 environment:
   sdk: '>=3.10.3 <4.0.0'
@@ -38,11 +38,20 @@ dependencies:
   spreadsheet_decoder: ^2.2.0
   # --- 新增的配方结束 ---
 
+  # 和自建 Worker 后端通信
+  http: ^1.2.0
+  # 日期格式化（题库列表的更新时间）
+  intl: ^0.19.0
+  # 把导入模板写到手机缓存目录，再用系统分享发出去
+  path_provider: ^2.1.4
+  # 记住登录 token 和主题选择
+  shared_preferences: ^2.3.0
+
+  # Web 端下载 .xlsx 用（Blob / object URL / 隐藏 <a download>）
+  web: ^1.1.0
+
   #使用 环境变量 (Environment Variables) 来隔离敏感信息,我的项目url和api
   flutter_dotenv: ^5.1.0
-  # --- 新增的配方 ---
-  supabase_flutter: ^2.0.0
-  # -----------------
   # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
@@ -78,6 +87,7 @@ flutter:
   # 注意缩进：assets 前面有2个空格，- .env 前面有4个空格
   assets:
     - .env
+    - assets/templates/bank_template.xlsx
     - assets/icon/app_icon.png  # 如果你以后想在App里显示这个图标，也可以加上，不加也不影响启动图标
 
   # To add custom fonts to your application, add a fonts section here,

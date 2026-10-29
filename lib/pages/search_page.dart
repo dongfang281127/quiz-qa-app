@@ -1,8 +1,22 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
-import 'exam_page.dart';
 
+import '../models/bank.dart';
+import '../services/auth_service.dart';
+import '../services/bank_service.dart';
+import '../theme/app_colors.dart';
+import '../utils/error_text.dart';
+import '../widgets/async_view.dart';
+import '../widgets/rename_bank_dialog.dart';
+import 'bank_detail_page.dart';
+
+/// 搜索页。
+/// 修复：
+/// - 改查 banks 表（不再全表拉 questions 在客户端分组），支持分页；
+/// - 输入时不再整页闪转圈（保留旧结果，只在角落显示加载中）；
+/// - 收藏按钮双向（已收藏可再点取消），重复收藏给明确提示；
+/// - 从这里进考场带上 owner，留言功能恢复可用；
+/// - 我的题库有确认删除。
 class SearchPage extends StatefulWidget {
   const SearchPage({super.key});
 
@@ -11,294 +25,350 @@ class SearchPage extends StatefulWidget {
 }
 
 class _SearchPageState extends State<SearchPage> {
+  final BankService _bankService = BankService();
   final TextEditingController _searchController = TextEditingController();
-  
-  // 结构：{ "试卷名": [题目1, 题目2...] }
-  // 顺便我们要把 "meta信息" (作者、ID) 也存起来，所以稍微改一下结构
-  // Map<GroupString, { "questions": [], "author":Str, "ownerId":Str }>
-  Map<String, Map<String, dynamic>> _searchResults = {};
-  
-  bool _isLoading = true;
+  final ScrollController _scrollController = ScrollController();
+
+  List<Bank> _banks = [];
+  final Set<int> _favoriteIds = {};
+  bool _isLoading = true; // 首次/刷新
+  bool _isLoadingMore = false;
+  bool _hasMore = true;
+  String? _errorText;
+  int _page = 0;
   Timer? _debounce;
-  Set<String> _myFavorites = {};
 
   @override
   void initState() {
     super.initState();
-    _fetchFavoritesAndData();
-  }
-
-  Future<void> _fetchFavoritesAndData() async {
-    final user = Supabase.instance.client.auth.currentUser;
-    if (user != null) {
-      final favs = await Supabase.instance.client
-          .from('favorites')
-          .select('group_name')
-          .eq('user_id', user.id);
-      
-      if (mounted) {
-        setState(() {
-          _myFavorites = favs.map((e) => e['group_name'].toString()).toSet();
-        });
-      }
-    }
-    _fetchAllPublicBanks();
-  }
-
-  Future<void> _fetchAllPublicBanks([String? keyword]) async {
-    setState(() => _isLoading = true);
-    try {
-      var query = Supabase.instance.client.from('questions').select();
-      if (keyword != null && keyword.trim().isNotEmpty) {
-        query = query.ilike('group_name', '%$keyword%');
-      }
-      final List<dynamic> response = await query.order('created_at', ascending: false);
-
-      Map<String, Map<String, dynamic>> tempGroup = {};
-      
-      for (var item in response) {
-        String groupName = item['group_name']?.toString() ?? "未知试卷";
-        
-        // ✨ 获取作者信息
-        String author = item['author_name']?.toString() ?? "未知";
-        String? ownerId = item['created_by']?.toString();
-
-        Map<String, dynamic> questionData = {
-          'id': item['id'], 
-          'question': item['question'].toString(),
-          'options': item['options'].toString(),
-          'answer': item['answer'].toString(),
-        };
-
-        if (!tempGroup.containsKey(groupName)) {
-          tempGroup[groupName] = {
-            "questions": <Map<String, dynamic>>[],
-            "author": author,
-            "ownerId": ownerId,
-          };
-        }
-        tempGroup[groupName]!["questions"].add(questionData);
-      }
-
-      if (mounted) setState(() { _searchResults = tempGroup; _isLoading = false; });
-    } catch (e) {
-      if (mounted) setState(() => _isLoading = false);
-    }
-  }
-
-  Future<void> _addToLibrary(String groupName) async {
-    final user = Supabase.instance.client.auth.currentUser;
-    if (user == null) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('请先登录！')));
-      return;
-    }
-
-    try {
-      setState(() {
-        _myFavorites.add(groupName);
-      });
-
-      await Supabase.instance.client.from('favorites').insert({
-        'user_id': user.id,
-        'group_name': groupName,
-      });
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('已收藏《$groupName》'), backgroundColor: Colors.green));
-      }
-    } catch (e) {
-      setState(() {
-        _myFavorites.remove(groupName);
-      });
-      // 这里的错误通常是重复收藏，忽略即可
-    }
-  }
-
-  // --- ✨ 新增：作者删除自己的题库 ---
-  Future<void> _deleteMyBank(String groupName) async {
-    bool? confirm = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('删除题库'),
-        content: Text('确定要永久删除《$groupName》吗？\n所有人的收藏和做题记录也会失效。'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
-          TextButton(
-            onPressed: () => Navigator.pop(context, true), 
-            style: TextButton.styleFrom(foregroundColor: Colors.red),
-            child: const Text('删除'),
-          ),
-        ],
-      ),
-    );
-
-    if (confirm != true) return;
-
-    try {
-      setState(() => _isLoading = true);
-      
-      final user = Supabase.instance.client.auth.currentUser;
-      if (user == null) return;
-
-      // 1. 删除 questions 表里的数据 (级联通常会处理关联表，如果没设级联可能需要手动删)
-      // 我们在 SQL 里设置了 policy，只允许删自己的
-      await Supabase.instance.client
-          .from('questions')
-          .delete()
-          .eq('group_name', groupName)
-          .eq('created_by', user.id); // 双重保险
-
-      // 2. 刷新列表
-      await _fetchAllPublicBanks(_searchController.text);
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('题库已删除')));
-      }
-
-    } catch (e) {
-      print("删除失败: $e");
-      setState(() => _isLoading = false);
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('删除失败: $e')));
-      }
-    }
-  }
-
-  void _onSearchChanged(String value) {
-    if (_debounce?.isActive ?? false) _debounce!.cancel();
-    _debounce = Timer(const Duration(milliseconds: 800), () => _fetchAllPublicBanks(value));
+    _refresh();
+    _scrollController.addListener(_onScroll);
   }
 
   @override
   void dispose() {
     _searchController.dispose();
+    _scrollController.dispose();
     _debounce?.cancel();
     super.dispose();
   }
 
+  void _onScroll() {
+    if (!_hasMore || _isLoadingMore || _isLoading) return;
+    if (_scrollController.position.pixels >
+        _scrollController.position.maxScrollExtent - 300) {
+      _loadMore();
+    }
+  }
+
+  Future<void> _refresh() async {
+    setState(() {
+      _isLoading = true;
+      _errorText = null;
+      _page = 0;
+      _hasMore = true;
+    });
+    await _fetch(page: 0, replace: true);
+  }
+
+  Future<void> _loadMore() async {
+    setState(() => _isLoadingMore = true);
+    await _fetch(page: _page + 1, replace: false);
+    if (mounted) setState(() => _isLoadingMore = false);
+  }
+
+  Future<void> _fetch({required int page, required bool replace}) async {
+    try {
+      final (banks, hasMore) =
+          await _bankService.fetchBanks(keyword: _searchController.text, page: page);
+      if (!mounted) return;
+      setState(() {
+        _page = page;
+        _hasMore = hasMore;
+        if (replace) {
+          _banks = banks;
+        } else {
+          final existing = _banks.map((b) => b.id).toSet();
+          _banks.addAll(banks.where((b) => !existing.contains(b.id)));
+        }
+        _isLoading = false;
+        _errorText = null;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _isLoading = false;
+        if (replace) _errorText = friendlyError(e);
+      });
+    }
+  }
+
+  void _onSearchChanged(String value) {
+    _debounce?.cancel();
+    _debounce = Timer(const Duration(milliseconds: 500), _refresh);
+  }
+
+  Future<void> _toggleFavorite(Bank bank) async {
+    if (!AuthService.instance.isLoggedIn) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('请先登录')));
+      return;
+    }
+    final wasFavorite = _favoriteIds.contains(bank.id);
+    // 乐观更新，失败回滚
+    setState(() {
+      wasFavorite ? _favoriteIds.remove(bank.id) : _favoriteIds.add(bank.id);
+    });
+    try {
+      if (wasFavorite) {
+        await _bankService.removeFavorite(bank.id);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('已取消收藏《${bank.name}》')));
+        }
+      } else {
+        await _bankService.addFavorite(bank.id);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('已收藏《${bank.name}》')));
+        }
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        wasFavorite ? _favoriteIds.add(bank.id) : _favoriteIds.remove(bank.id);
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('操作失败：${friendlyError(e)}')));
+    }
+  }
+
+  Future<void> _deleteMyBank(Bank bank) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('删除题库'),
+        content: Text('确定要永久删除《${bank.name}》吗？\n所有人的收藏和做题记录也会一并失效。'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: TextButton.styleFrom(foregroundColor: context.appColors.danger),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    try {
+      await _bankService.deleteBank(bank.id);
+      if (!mounted) return;
+      setState(() {
+        _banks.removeWhere((b) => b.id == bank.id);
+        _favoriteIds.remove(bank.id);
+      });
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('题库《${bank.name}》已删除')));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('删除失败：${friendlyError(e)}')));
+    }
+  }
+
+  /// 改自己题库的名字。只在搜索结果里给自己上传的题库显示这个图标。
+  Future<void> _renameMyBank(Bank bank) async {
+    final name = await showRenameBankDialog(context, currentName: bank.name);
+    if (name == null) return;
+    if (!mounted) return;
+    if (name.isEmpty) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('题库名称不能为空')));
+      return;
+    }
+    if (name == bank.name) return;
+
+    try {
+      final saved = await _bankService.renameBank(bank.id, name);
+      if (!mounted) return;
+      setState(() {
+        final i = _banks.indexWhere((b) => b.id == bank.id);
+        if (i >= 0) _banks[i] = _banks[i].copyWith(name: saved);
+      });
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('题库已改名为《$saved》')));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('改名失败：${friendlyError(e)}')));
+    }
+  }
+
+  /// 点题库先进「章节列表」，再挑一章开始练。
+  void _openBank(Bank bank) {
+    Navigator.push(context,
+        MaterialPageRoute(builder: (_) => BankDetailPage(bank: bank)));
+  }
+
   @override
   Widget build(BuildContext context) {
-    final bool isDark = Theme.of(context).brightness == Brightness.dark;
-    final Color textColor = isDark ? Colors.white : Colors.black87;
-    final Color hintColor = isDark ? Colors.white60 : Colors.black54;
-    final Color iconColor = isDark ? Colors.white70 : Colors.black54;
-    final Color boxBgColor = isDark ? Colors.white.withOpacity(0.15) : Colors.black.withOpacity(0.05);
-
-    // 获取当前用户ID
-    final currentUserId = Supabase.instance.client.auth.currentUser?.id;
+    final theme = Theme.of(context);
+    final currentUserId = AuthService.instance.userId;
 
     return Scaffold(
       appBar: AppBar(
-        title: Container(
-          height: 40,
-          decoration: BoxDecoration(
-            color: boxBgColor,
-            borderRadius: BorderRadius.circular(20),
-          ),
-          child: TextField(
-            controller: _searchController,
-            onChanged: _onSearchChanged,
-            style: TextStyle(color: textColor), 
-            cursorColor: textColor,
-            decoration: InputDecoration(
-              hintText: '搜索公共题库...',
-              hintStyle: TextStyle(color: hintColor),
-              border: InputBorder.none,
-              prefixIcon: Icon(Icons.search, color: iconColor),
-              contentPadding: const EdgeInsets.only(top: 5),
-            ),
+        title: TextField(
+          controller: _searchController,
+          onChanged: _onSearchChanged,
+          textInputAction: TextInputAction.search,
+          onSubmitted: (_) => _refresh(),
+          decoration: InputDecoration(
+            hintText: '搜索题库名…',
+            prefixIcon: const Icon(Icons.search),
+            suffixIcon: _searchController.text.isEmpty
+                ? null
+                : IconButton(
+                    tooltip: '清空',
+                    icon: const Icon(Icons.close),
+                    onPressed: () {
+                      _searchController.clear();
+                      _refresh();
+                    },
+                  ),
+            isDense: true,
+            contentPadding: const EdgeInsets.symmetric(vertical: 10),
           ),
         ),
       ),
-      body: _isLoading
-          ? const Center(child: CircularProgressIndicator())
-          : _searchResults.isEmpty
-              ? Center(child: Text("没有找到相关试卷", style: TextStyle(color: hintColor)))
-              : ListView.builder(
-                  padding: const EdgeInsets.all(16),
-                  itemCount: _searchResults.keys.length,
-                  itemBuilder: (context, index) {
-                    String groupName = _searchResults.keys.elementAt(index);
-                    var groupData = _searchResults[groupName]!;
-                    List<Map<String, dynamic>> questions = groupData["questions"];
-                    String author = groupData["author"];
-                    String? ownerId = groupData["ownerId"];
-                    
-                    bool isBookmarked = _myFavorites.contains(groupName);
-                    
-                    // ✨ 判断：这是不是我上传的？
-                    bool isMine = (currentUserId != null && ownerId == currentUserId);
+      body: _errorText != null
+          ? AsyncView(
+              status: AsyncStatus.error,
+              errorText: _errorText,
+              onRetry: _refresh,
+              dataBuilder: (_) => const SizedBox.shrink(),
+            )
+          : _isLoading
+              ? const Center(child: CircularProgressIndicator())
+              : _banks.isEmpty
+                  ? AsyncView(
+                      status: AsyncStatus.empty,
+                      emptyIcon: Icons.search_off,
+                      emptyText: '没有找到相关题库',
+                      onRetry: _refresh,
+                      dataBuilder: (_) => const SizedBox.shrink(),
+                    )
+                  : RefreshIndicator(
+                      onRefresh: _refresh,
+                      child: ListView.builder(
+                        controller: _scrollController,
+                        physics: const AlwaysScrollableScrollPhysics(),
+                        padding: const EdgeInsets.all(16),
+                        itemCount: _banks.length + (_hasMore ? 1 : 0),
+                        itemBuilder: (context, index) {
+                          if (index >= _banks.length) {
+                            return const Padding(
+                              padding: EdgeInsets.symmetric(vertical: 16),
+                              child: Center(
+                                  child: SizedBox(
+                                      width: 24,
+                                      height: 24,
+                                      child: CircularProgressIndicator(strokeWidth: 2))),
+                            );
+                          }
+                          final bank = _banks[index];
+                          final isMine = currentUserId != null &&
+                              bank.ownerId == currentUserId;
+                          final isFavorite = _favoriteIds.contains(bank.id);
 
-                    return Card(
-                      margin: const EdgeInsets.only(bottom: 16),
-                      child: ListTile(
-                        leading: CircleAvatar(
-                          backgroundColor: isMine ? Colors.green.withOpacity(0.2) : Colors.blue.withOpacity(0.1),
-                          child: Icon(Icons.description, color: isMine ? Colors.green : Colors.blue),
-                        ),
-                        title: Text(groupName, style: const TextStyle(fontWeight: FontWeight.bold)),
-                        subtitle: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text("题目: ${questions.length} 道"),
-                            // ✨ 显示作者
-                            Row(
-                              children: [
-                                const Icon(Icons.person_outline, size: 12, color: Colors.grey),
-                                const SizedBox(width: 4),
-                                Text(
-                                  isMine ? "我上传的" : author, 
-                                  style: TextStyle(
-                                    fontSize: 12, 
-                                    color: isMine ? Colors.green : Colors.grey
-                                  )
-                                ),
-                              ],
-                            )
-                          ],
-                        ),
-                        trailing: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            // ✨ 如果是我的，显示删除按钮
-                            if (isMine)
-                              IconButton(
-                                icon: const Icon(Icons.delete_forever, color: Colors.red),
-                                tooltip: "删除我的题库",
-                                onPressed: () => _deleteMyBank(groupName),
+                          return Card(
+                            child: ListTile(
+                              leading: CircleAvatar(
+                                backgroundColor: isMine
+                                    ? context.appColors.success.withValues(alpha: 0.15)
+                                    : context.appColors.info.withValues(alpha: 0.12),
+                                child: Icon(Icons.description,
+                                    color: isMine
+                                        ? context.appColors.success
+                                        : context.appColors.info),
                               ),
-                              
-                            // 收藏按钮
-                            IconButton(
-                              icon: Icon(
-                                isBookmarked ? Icons.bookmark : Icons.bookmark_add_outlined,
-                                color: isBookmarked ? Theme.of(context).primaryColor : Colors.orange,
+                              title: Text(bank.name,
+                                  style: const TextStyle(fontWeight: FontWeight.bold)),
+                              subtitle: Row(
+                                children: [
+                                  Icon(Icons.person_outline,
+                                      size: 12, color: theme.colorScheme.outline),
+                                  const SizedBox(width: 4),
+                                  Flexible(
+                                    child: Text(
+                                      isMine ? '我上传的' : bank.authorName,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        color: isMine
+                                            ? context.appColors.success
+                                            : theme.colorScheme.outline,
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 10),
+                                  Text('${bank.questionCount} 道题',
+                                      style: TextStyle(
+                                          fontSize: 12,
+                                          color: theme.colorScheme.outline)),
+                                ],
                               ),
-                              onPressed: isBookmarked ? null : () => _addToLibrary(groupName),
+                              trailing: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  if (isMine) ...[
+                                    IconButton(
+                                      tooltip: '改题库名',
+                                      visualDensity: VisualDensity.compact,
+                                      constraints: const BoxConstraints.tightFor(
+                                          width: 36, height: 36),
+                                      padding: EdgeInsets.zero,
+                                      icon: Icon(
+                                          Icons.drive_file_rename_outline,
+                                          color: context.appColors.info),
+                                      onPressed: () => _renameMyBank(bank),
+                                    ),
+                                    IconButton(
+                                      tooltip: '删除我的题库',
+                                      visualDensity: VisualDensity.compact,
+                                      constraints: const BoxConstraints.tightFor(
+                                          width: 36, height: 36),
+                                      padding: EdgeInsets.zero,
+                                      icon: Icon(Icons.delete_forever,
+                                          color: context.appColors.danger),
+                                      onPressed: () => _deleteMyBank(bank),
+                                    ),
+                                  ],
+                                  IconButton(
+                                    tooltip: isFavorite ? '取消收藏' : '收藏到藏书阁',
+                                    visualDensity: VisualDensity.compact,
+                                    constraints: const BoxConstraints.tightFor(
+                                        width: 36, height: 36),
+                                    padding: EdgeInsets.zero,
+                                    icon: Icon(
+                                      isFavorite
+                                          ? Icons.bookmark
+                                          : Icons.bookmark_add_outlined,
+                                      color: isFavorite
+                                          ? theme.colorScheme.primary
+                                          : context.appColors.warning,
+                                    ),
+                                    onPressed: () => _toggleFavorite(bank),
+                                  ),
+                                ],
+                              ),
+                              onTap: () => _openBank(bank),
                             ),
-                          ],
-                        ),
-                        onTap: () {
-                          List<Map<String, dynamic>> safeQuestions = questions.map((q) {
-                            return {
-                              'id': q['id'], 
-                              "question": q["question"].toString(),
-                              "options": q["options"].toString(),
-                              "answer": q["answer"].toString(),
-                              "created_by": q["created_by"]?.toString(), 
-                              "group_name": groupName, // 顺便把试卷名也带上，发信要用
-                            };
-                          }).toList();
-
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(builder: (context) => ExamPage(questions: safeQuestions)),
                           );
                         },
                       ),
-                    );
-                  },
-                ),
+                    ),
     );
   }
 }

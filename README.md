@@ -14,6 +14,7 @@ An Android quiz app built with Flutter, backed by a Cloudflare Worker and a D1 (
 - Comments under each question, plus an in-app mailbox to the bank author.
 - Upload your own banks, edit or delete questions, import from an Excel/CSV template.
 - Light and dark themes.
+- Runs on Android and in a browser — the same code builds for the web.
 
 ## Stack
 
@@ -59,6 +60,20 @@ Then:
 flutter run
 flutter build apk --release
 ```
+
+## Build for web
+
+The same codebase compiles to a web app:
+
+```bash
+flutter build web --release --base-href /quiz/app/ \
+  --dart-define=API_BASE_URL=https://your-worker.example.com
+```
+
+Upload `build/web` so it is served under the `--base-href` path (the trailing slash matters). Two differences from the Android build:
+
+- The Worker must allow the site origin through CORS — see `ALLOWED_ORIGINS` in `wenda-worker/wrangler.toml`.
+- `path_provider` does not exist on the web, so the Excel template button downloads the template through the browser instead of writing it into a folder.
 
 ## Run the backend
 

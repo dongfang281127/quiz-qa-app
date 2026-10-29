@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
 
+/// 给出题人留言弹窗。
+/// 修复：空内容时禁用发送按钮（之前点了才弹“不能为空”的 SnackBar，
+/// 而且那句话在 Dialog 之上基本看不见）。
 class OwlMessageDialog extends StatefulWidget {
   const OwlMessageDialog({super.key});
 
@@ -8,12 +11,20 @@ class OwlMessageDialog extends StatefulWidget {
 }
 
 class _OwlMessageDialogState extends State<OwlMessageDialog> {
-  // 控制器现在藏在这个组件内部，外部不需要操心了
   final TextEditingController _msgCtrl = TextEditingController();
+  int _length = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _msgCtrl.addListener(() {
+      if (mounted) setState(() => _length = _msgCtrl.text.trim().length);
+    });
+  }
 
   @override
   void dispose() {
-    _msgCtrl.dispose(); // 记得销毁，防止内存泄漏
+    _msgCtrl.dispose();
     super.dispose();
   }
 
@@ -25,43 +36,37 @@ class _OwlMessageDialogState extends State<OwlMessageDialog> {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text(
-            "不吝赐教\n有什么思绪或建议，请在此落笔...",
-            style: TextStyle(fontSize: 12, color: Colors.grey),
-          ),
+          const Text('不吝赐教\n有什么思绪或建议，请在此落笔...',
+              style: TextStyle(fontSize: 12)),
           const SizedBox(height: 10),
           TextField(
             controller: _msgCtrl,
             maxLines: 3,
-            autofocus: true, // 打开弹窗自动聚焦键盘
+            maxLength: 200,
+            autofocus: true,
             decoration: const InputDecoration(
-              hintText: "在此输入内容...",
+              hintText: '在此输入内容...',
+              counterText: '',
               border: OutlineInputBorder(),
               contentPadding: EdgeInsets.all(12),
             ),
+          ),
+          Align(
+            alignment: Alignment.centerRight,
+            child: Text('$_length/200',
+                style: Theme.of(context).textTheme.bodySmall),
           ),
         ],
       ),
       actions: [
         TextButton(
-          onPressed: () {
-            // 点击取消，返回 null
-            Navigator.of(context).pop(null);
-          },
+          onPressed: () => Navigator.of(context).pop(null),
           child: const Text('取消'),
         ),
         ElevatedButton.icon(
-          onPressed: () {
-            String text = _msgCtrl.text.trim();
-            if (text.isEmpty) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('不能发送空消息哦')),
-              );
-              return;
-            }
-            // 点击发送，把输入的文字传回去
-            Navigator.of(context).pop(text);
-          },
+          onPressed: _length == 0 || _length > 200
+              ? null
+              : () => Navigator.of(context).pop(_msgCtrl.text.trim()),
           icon: const Icon(Icons.send, size: 16),
           label: const Text('发送'),
         ),

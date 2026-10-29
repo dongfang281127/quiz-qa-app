@@ -14,6 +14,7 @@
 - 每道题下面可以评论，「联系」菜单里能给题库作者留言。
 - 可以上传自己的题库、改题、删题，从 Excel/CSV 模板批量导入。
 - 明暗两套主题。
+- Android 上装，也能编成 Web 版直接在浏览器里用。
 
 ## 技术栈
 
@@ -59,6 +60,20 @@ API_BASE_URL=https://your-worker.example.com
 flutter run
 flutter build apk --release
 ```
+
+## 编成网页版
+
+同一套代码可以直接编成 Web 版：
+
+```bash
+flutter build web --release --base-href /quiz/app/ \
+  --dart-define=API_BASE_URL=https://your-worker.example.com
+```
+
+把 `build/web` 传到 `--base-href` 指定的路径下（末尾的斜杠不能少）。和 Android 版有两处不同：
+
+- Worker 要在 CORS 里放行站点域名，见 `wenda-worker/wrangler.toml` 的 `ALLOWED_ORIGINS`。
+- Web 上没有 `path_provider`，所以「下载 Excel 模板」按钮改成由浏览器直接下载，不落到文件夹里。
 
 ## 部署后端
 

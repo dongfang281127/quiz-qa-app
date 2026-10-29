@@ -1,89 +1,163 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 
+import 'app_info.dart';
+import 'pages/login_page.dart';
+import 'pages/splash_page.dart';
+import 'services/api_client.dart';
+import 'services/auth_service.dart';
 import 'theme/app_theme.dart';
-import 'pages/splash_page.dart'; // 开屏页
-import 'pages/login_page.dart';  // ✨ 必须引入登录页，用于强制跳转
+import 'theme/theme_controller.dart';
+import 'utils/error_text.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  await dotenv.load(fileName: ".env");
+  String? initError;
+  try {
+    // Web 版可能拿不到 .env（静态托管会把点开头的文件过滤掉），
+    // 所以 .env 允许缺席，缺了就用构建时注入的 --dart-define=API_BASE_URL。
+    await dotenv.load(fileName: ".env", isOptional: true);
+    final baseUrl = dotenv.env['API_BASE_URL'] ??
+        const String.fromEnvironment('API_BASE_URL');
+    if (baseUrl.trim().isEmpty) {
+      initError = '配置文件缺少 API_BASE_URL';
+    } else {
+      // 服务器地址 + 上次登录留下的 token，都在这里一次性就位。
+      await ApiClient.instance.init(baseUrl: baseUrl);
+      AuthService.instance.bindUnauthorizedHandler();
+    }
+  } catch (e) {
+    initError = friendlyError(e);
+  }
 
-  await Supabase.initialize(
-    url: dotenv.env['SUPABASE_URL'] ?? '',
-    anonKey: dotenv.env['SUPABASE_ANON_KEY'] ?? '',
-  );
+  // 主题持久化：启动即读，避免“每次打开都变回深色”。
+  await ThemeController.instance.load();
 
-  runApp(const MyApp());
+  runApp(MyApp(initError: initError));
 }
 
 class MyApp extends StatefulWidget {
-  const MyApp({super.key});
+  const MyApp({super.key, this.initError});
 
-  // ✨ 1. 定义一把“万能钥匙”
-  // 它可以让我们在任何地方（比如监听器里）控制页面跳转
-  static final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
+  /// 初始化失败时给出可读的错误页，而不是白屏。
+  final String? initError;
+
+  /// 全局导航钥匙：登录失效时在任何位置都能把栈清空并回到登录页。
+  static final GlobalKey<NavigatorState> navigatorKey =
+      GlobalKey<NavigatorState>();
+
+  /// 主动 signOut 前置位，用于区分“用户自己退出”和“被动登出”。
+  static bool _signOutRequested = false;
+  static void markSignOutRequested() => _signOutRequested = true;
 
   @override
   State<MyApp> createState() => _MyAppState();
 }
 
 class _MyAppState extends State<MyApp> {
-  bool _isDarkTheme = true;
+  StreamSubscription<void>? _authSub;
 
   @override
   void initState() {
     super.initState();
-    // 监听登录状态变化
-    Supabase.instance.client.auth.onAuthStateChange.listen((data) {
-      final event = data.event;
-
-      // ✨✨✨ 核心修复代码 ✨✨✨
-      // 如果检测到“用户退出了” (SIGNED_OUT)
-      if (event == AuthChangeEvent.signedOut) {
-        // 使用万能钥匙，强制清空所有页面，跳转到登录页
-        MyApp.navigatorKey.currentState?.pushAndRemoveUntil(
-          MaterialPageRoute(
-            builder: (_) => LoginPage(
-              isDark: _isDarkTheme,
-              onThemeChanged: _toggleTheme,
-            ),
-          ),
-              (route) => false, // 这里的 false 表示删掉之前所有的页面记录
-        );
-      }
-
-      // 保持原本的 setState 用来更新 UI
-      if (mounted) {
-        setState(() {});
-      }
-    });
+    _listenAuth();
   }
 
-  void _toggleTheme() {
-    setState(() {
-      _isDarkTheme = !_isDarkTheme;
+  @override
+  void dispose() {
+    _authSub?.cancel();
+    super.dispose();
+  }
+
+  /// 只关心“被动登出”：token 失效 / 服务端 401。
+  void _listenAuth() {
+    _authSub = AuthService.instance.onSignedOut.listen((_) {
+      // 等一帧再导航，避免事件恰好落在 build 期间。
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        final nav = MyApp.navigatorKey.currentState;
+        final ctx = MyApp.navigatorKey.currentContext;
+        if (nav == null || ctx == null) return;
+
+        // 主动退出（个人页按钮）自己会提示；这里只兜底“被动登出”。
+        final wasSignedOutByUser = MyApp._signOutRequested;
+        if (!wasSignedOutByUser && ctx.mounted) {
+          ScaffoldMessenger.of(ctx).showSnackBar(
+            const SnackBar(content: Text('登录已失效，请重新登录')),
+          );
+        }
+        MyApp._signOutRequested = false;
+
+        nav.pushAndRemoveUntil(
+          MaterialPageRoute(builder: (_) => const LoginPage(kickedOut: false)),
+          (route) => false,
+        );
+      });
     });
   }
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      // ✨ 2. 把钥匙交给 MaterialApp
-      navigatorKey: MyApp.navigatorKey,
+    if (widget.initError != null) {
+      return MaterialApp(
+        debugShowCheckedModeBanner: false,
+        theme: AppTheme.dark(),
+        home: _InitErrorPage(message: widget.initError!),
+      );
+    }
 
-      title: '问道', // 你的 App 名字
-      debugShowCheckedModeBanner: false,
-      theme: AppTheme.lightTheme,
-      darkTheme: AppTheme.darkTheme,
-      themeMode: _isDarkTheme ? ThemeMode.dark : ThemeMode.light,
+    return ValueListenableBuilder<AppThemeMode>(
+      valueListenable: ThemeController.instance.mode,
+      builder: (context, mode, _) {
+        return MaterialApp(
+          navigatorKey: MyApp.navigatorKey,
+          title: AppInfo.appName,
+          debugShowCheckedModeBanner: false,
+          theme: AppTheme.light(),
+          darkTheme: AppTheme.dark(),
+          themeMode: switch (mode) {
+            AppThemeMode.light => ThemeMode.light,
+            AppThemeMode.dark => ThemeMode.dark,
+            AppThemeMode.system => ThemeMode.system,
+          },
+          home: const SplashPage(),
+        );
+      },
+    );
+  }
+}
 
-      // 启动时依然先去开屏页
-      home: SplashPage(
-        isDark: _isDarkTheme,
-        onThemeChanged: _toggleTheme,
+class _InitErrorPage extends StatelessWidget {
+  const _InitErrorPage({required this.message});
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      value: SystemUiOverlayStyle.light,
+      child: Scaffold(
+        backgroundColor: const Color(0xFF0A1612),
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(32),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.error_outline, color: Colors.white54, size: 56),
+                const SizedBox(height: 16),
+                const Text('应用初始化失败',
+                    style: TextStyle(color: Colors.white70, fontSize: 18)),
+                const SizedBox(height: 8),
+                Text(message,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(color: Colors.white38, fontSize: 13)),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }

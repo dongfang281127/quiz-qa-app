@@ -1,0 +1,20 @@
+{
+  "name": "wenda-worker",
+  "private": true,
+  "version": "1.0.0",
+  "description": "问道 App 后端：Cloudflare Worker + D1",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:migrate": "wrangler d1 migrations apply wenda-db --remote",
+    "db:migrate:local": "wrangler d1 migrations apply wenda-db --local",
+    "check": "node --check src/index.js",
+    "probe": "node tools/route_probe.mjs",
+    "verify": "node tools/verify_remote.mjs",
+    "test": "node tools/check_sql.mjs && node tools/smoke_test.mjs && node tools/route_probe.mjs"
+  },
+  "devDependencies": {
+    "wrangler": "^3.90.0"
+  }
+}

@@ -1,0 +1,30 @@
+# 问道 API：Flutter App 的后端（替代 Supabase）
+# 部署：
+#   1) npx wrangler d1 create wenda-db        -> 把返回的 database_id 填到下面
+#   2) npx wrangler d1 migrations apply wenda-db --remote
+#   3) npx wrangler secret put JWT_SECRET     -> 随便生成 32+ 位随机串
+#   4) npx wrangler deploy
+
+name = "wenda-api"
+main = "src/index.js"
+compatibility_date = "2025-09-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "wenda-db"
+database_id = "7f4e2585-565a-4bd5-8546-25178fa7efc5"
+migrations_dir = "migrations"
+
+[vars]
+# 允许的浏览器来源（App 端不校验 CORS；这里是给后面挂到个人网站的 web 版用）
+ALLOWED_ORIGINS = "https://281127.xyz,https://www.281127.xyz,https://app-api.281127.xyz"
+PBKDF2_ITERATIONS = "100000"
+ENVIRONMENT = "production"
+
+# 自定义子域名（free plan 也支持）。首次 deploy 前确认 281127.xyz 已在本账号托管。
+[[routes]]
+pattern = "app-api.281127.xyz"
+custom_domain = true
+
+[observability]
+enabled = true

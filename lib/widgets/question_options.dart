@@ -1,11 +1,18 @@
 import 'package:flutter/material.dart';
 
+import '../theme/app_colors.dart';
+
+/// 选项列表。
+/// 修复：
+/// - 浅色模式下“选中 = 白字配淡绿底”几乎不可读 → 用 colorScheme.primary/onPrimary；
+/// - BoxDecoration 同时给了 BoxShape.circle 和 borderRadius（语义冲突）→ 分开处理；
+/// - 揭晓答案后用语义色（success/danger），深色主题下不再和主色混在一起。
 class QuestionOptions extends StatelessWidget {
   final List<String> options;
-  final Set<int> selectedIndices; 
-  final bool isMultiSelect;       
+  final Set<int> selectedIndices;
+  final bool isMultiSelect;
   final bool isAnswerRevealed;
-  final List<int> correctIndices; 
+  final List<int> correctIndices;
   final Function(int) onOptionTap;
 
   const QuestionOptions({
@@ -20,107 +27,112 @@ class QuestionOptions extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    bool isDark = Theme.of(context).brightness == Brightness.dark;
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+    final appColors = context.appColors;
 
     return Column(
       children: List.generate(options.length, (index) {
-        String letter = String.fromCharCode(65 + index); // A, B, C...
-        bool isSelected = selectedIndices.contains(index);
-        bool isCorrect = correctIndices.contains(index);
+        final letter = String.fromCharCode(65 + index);
+        final isSelected = selectedIndices.contains(index);
+        final isCorrect = correctIndices.contains(index);
 
-        // --- 🎨 颜色逻辑修复 ---
         Color bgColor = Colors.transparent;
-        Color borderColor = isDark ? Colors.grey.shade700 : Colors.grey.shade300;
-        // 默认文字颜色：跟随系统
-        Color textColor = isDark ? Colors.white : Colors.black; 
+        Color borderColor =
+            isDark ? Colors.white24 : theme.colorScheme.outlineVariant;
+        Color textColor = theme.colorScheme.onSurface;
 
         if (isAnswerRevealed) {
-          // 揭晓答案后
           if (isCorrect) {
-            bgColor = Colors.green.withOpacity(0.2);
-            borderColor = Colors.green;
-            textColor = Colors.green; // 正确答案文字变绿
+            bgColor = appColors.success.withValues(alpha: 0.16);
+            borderColor = appColors.success;
+            textColor = appColors.success;
           } else if (isSelected && !isCorrect) {
-            bgColor = Colors.red.withOpacity(0.2);
-            borderColor = Colors.red;
-            textColor = Colors.red; // 错选文字变红
+            bgColor = appColors.danger.withValues(alpha: 0.16);
+            borderColor = appColors.danger;
+            textColor = appColors.danger;
           }
+        } else if (isSelected) {
+          bgColor = theme.colorScheme.primary;
+          borderColor = theme.colorScheme.primary;
+          textColor = theme.colorScheme.onPrimary;
+        }
+
+        // 判定小方块/圆圈里的前景色
+        Color markBg;
+        Color markBorder;
+        Color markText;
+        if (isAnswerRevealed) {
+          if (isCorrect) {
+            markBg = appColors.success;
+            markBorder = appColors.success;
+            markText = appColors.onSuccess;
+          } else if (isSelected) {
+            markBg = appColors.danger;
+            markBorder = appColors.danger;
+            markText = appColors.onDanger;
+          } else {
+            markBg = Colors.transparent;
+            markBorder = theme.colorScheme.outline;
+            markText = theme.colorScheme.outline;
+          }
+        } else if (isSelected) {
+          markBg = theme.colorScheme.onPrimary;
+          markBorder = theme.colorScheme.onPrimary;
+          markText = theme.colorScheme.primary;
         } else {
-          // 答题中
-          if (isSelected) {
-            // ✨✨✨ 修复点：选中状态下，背景是深色，所以文字强制为白色 ✨✨✨
-            bgColor = Theme.of(context).primaryColor;
-            borderColor = Theme.of(context).primaryColor;
-            textColor = Colors.white; 
-          }
+          markBg = Colors.transparent;
+          markBorder = theme.colorScheme.outline;
+          markText = theme.colorScheme.outline;
         }
 
         return GestureDetector(
           onTap: () => onOptionTap(index),
-          child: Container(
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 150),
             margin: const EdgeInsets.only(bottom: 12),
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
               color: bgColor,
               border: Border.all(
-                color: borderColor, 
-                width: isSelected || (isAnswerRevealed && isCorrect) ? 2 : 1
+                color: borderColor,
+                width: isSelected || (isAnswerRevealed && isCorrect) ? 2 : 1,
               ),
-              borderRadius: BorderRadius.circular(8),
+              borderRadius: BorderRadius.circular(10),
             ),
             child: Row(
               children: [
-                // 选项圆圈/方块
                 Container(
                   width: 24,
                   height: 24,
                   alignment: Alignment.center,
                   decoration: BoxDecoration(
-                    // 选中时填充颜色，未选中透明
-                    color: isSelected 
-                        ? (isAnswerRevealed 
-                            ? (isCorrect ? Colors.green : Colors.red) // 揭晓后颜色
-                            : Colors.white) // 答题中选中时，方块内部变白
-                        : Colors.transparent, 
+                    color: markBg,
                     shape: isMultiSelect ? BoxShape.rectangle : BoxShape.circle,
-                    borderRadius: isMultiSelect ? BorderRadius.circular(4) : null,
-                    border: Border.all(
-                      // 选中时边框变白(因为背景是深色)，未选中灰色
-                      color: isSelected ? Colors.white : Colors.grey,
-                      width: 1.5,
-                    ),
+                    borderRadius:
+                        isMultiSelect ? BorderRadius.circular(5) : null,
+                    border: Border.all(color: markBorder, width: 1.5),
                   ),
-                  child: Text(
-                    letter,
-                    style: TextStyle(
-                      // 选中时字母变回主题色(因为方块是白的)，未选中灰色
-                      color: isSelected 
-                          ? (isAnswerRevealed 
-                              ? Colors.white 
-                              : Theme.of(context).primaryColor)
-                          : Colors.grey,
-                      fontWeight: FontWeight.bold,
-                      fontSize: 12,
-                    ),
-                  ),
+                  child: Text(letter,
+                      style: TextStyle(
+                          color: markText,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 12)),
                 ),
                 const SizedBox(width: 12),
                 Expanded(
-                  child: Text(
-                    options[index],
-                    style: TextStyle(
-                      fontSize: 16, 
-                      color: textColor, // 使用上面计算好的颜色
-                      fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-                    ),
-                  ),
+                  child: Text(options[index],
+                      style: TextStyle(
+                          fontSize: 16,
+                          color: textColor,
+                          fontWeight:
+                              isSelected ? FontWeight.bold : FontWeight.normal)),
                 ),
-                // 结果图标
                 if (isAnswerRevealed)
                   if (isCorrect)
-                    const Icon(Icons.check_circle, color: Colors.green, size: 20)
+                    Icon(Icons.check_circle, color: appColors.success, size: 20)
                   else if (isSelected)
-                    const Icon(Icons.cancel, color: Colors.red, size: 20),
+                    Icon(Icons.cancel, color: appColors.danger, size: 20),
               ],
             ),
           ),

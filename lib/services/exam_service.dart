@@ -1,106 +1,139 @@
-import 'package:supabase_flutter/supabase_flutter.dart';
+import 'api_client.dart';
+import 'auth_service.dart';
 
+/// 做题记录 + 给作者的留言。
 class ExamService {
-  final SupabaseClient _client = Supabase.instance.client;
+  final ApiClient _api = ApiClient.instance;
 
-  /// 获取用户的做题记录 (用于恢复进度)
-  Future<Map<int, Map<String, dynamic>>> fetchUserProgress({
-    required String userId,
-    required List<int> questionIds,
-  }) async {
-    try {
-      if (questionIds.isEmpty) return {};
-
-      final response = await _client
-          .from('user_records')
-          .select('question_id, is_correct, selected_option_index')
-          .eq('user_id', userId)
-          .inFilter('question_id', questionIds);
-
-      final List<dynamic> data = response as List<dynamic>;
-      Map<int, Map<String, dynamic>> history = {};
-
-      for (var record in data) {
-        history[record['question_id']] = {
-          'isCorrect': record['is_correct'] ?? false,
-          'selectedIndex': record['selected_option_index'] ?? -1,
+  /// 拉取某个题库的做题记录。
+  /// 返回 {questionId: {isCorrect: bool, selectedIndices: [..]}}
+  Future<Map<int, Map<String, dynamic>>> fetchProgress({required int bankId}) async {
+    if (!AuthService.instance.isLoggedIn) return {};
+    final res = await _api.get('/api/banks/$bankId/progress');
+    final raw = res['records'];
+    final history = <int, Map<String, dynamic>>{};
+    if (raw is Map) {
+      raw.forEach((key, value) {
+        final qid = int.tryParse('$key');
+        if (qid == null || value is! Map) return;
+        history[qid] = {
+          'isCorrect': value['is_correct'] == true,
+          'selectedIndices': _parseIndices(value['selected_indices']),
         };
-      }
-      return history;
-    } catch (e) {
-      print("获取进度失败: $e");
-      return {};
+      });
     }
+    return history;
   }
 
-  /// ✨✨✨ 核心修复：保存/更新进度 ✨✨✨
+  List<int> _parseIndices(dynamic raw) {
+    if (raw is List) {
+      return raw.map((e) => int.tryParse('$e') ?? -1).where((i) => i >= 0).toList();
+    }
+    if (raw is String && raw.isNotEmpty) {
+      return raw
+          .split(',')
+          .map((e) => int.tryParse(e.trim()) ?? -1)
+          .where((i) => i >= 0)
+          .toList();
+    }
+    if (raw is int && raw >= 0) return [raw];
+    return [];
+  }
+
+  /// 保存/更新一道题的进度（后端按 user_id + question_id 做 upsert）。
   Future<void> saveProgress({
-    required String userId,
+    required int bankId,
     required int questionId,
     required bool isCorrect,
-    required int selectedOptionIndex,
+    required List<int> selectedIndices,
   }) async {
-    try {
-      // 使用 upsert：如果 (user_id, question_id) 存在则更新，不存在则插入
-      // 注意：这需要在 Supabase 里设置 user_records 表的 (user_id, question_id) 为复合唯一键(Unique Constraint)
-      // 如果你没设置唯一键，下面的代码可能会报错，建议去 Supabase SQL Editor 执行:
-      // ALTER TABLE user_records ADD CONSTRAINT unique_user_question UNIQUE (user_id, question_id);
-      
-      await _client.from('user_records').upsert({
-        'user_id': userId,
-        'question_id': questionId,
-        'is_correct': isCorrect,
-        'selected_option_index': selectedOptionIndex,
-        'created_at': DateTime.now().toIso8601String(), // 更新时间
-      }, onConflict: 'user_id, question_id'); // 指定冲突检测字段
-      
-    } catch (e) {
-      print("保存进度失败: $e");
-      // 如果 upsert 失败（可能是因为没有唯一约束），尝试先删后插的笨办法作为兜底
-      try {
-        await _client.from('user_records').delete().match({
-          'user_id': userId, 
-          'question_id': questionId
-        });
-        await _client.from('user_records').insert({
-          'user_id': userId,
-          'question_id': questionId,
-          'is_correct': isCorrect,
-          'selected_option_index': selectedOptionIndex,
-        });
-      } catch (e2) {
-        print("兜底保存也失败: $e2");
-      }
+    if (!AuthService.instance.isLoggedIn) return;
+    await _api.put('/api/progress', body: {
+      'bank_id': bankId,
+      'question_id': questionId,
+      'is_correct': isCorrect,
+      'selected_indices': selectedIndices,
+    });
+  }
+
+  /// 重置进度。[chapter] 为 null 时清整个题库，否则只清这一章。
+  Future<void> resetProgress({required int bankId, String? chapter, String? subject}) async {
+    if (!AuthService.instance.isLoggedIn) return;
+    await _api.post('/api/banks/$bankId/progress/reset', body: {
+      if (chapter != null) 'chapter': chapter,
+      if (subject != null) 'subject': subject,
+    });
+  }
+
+  /// 当前用户在题库中收藏的题号。
+  Future<Set<int>> fetchQuestionFavoriteIds({required int bankId}) async {
+    if (!AuthService.instance.isLoggedIn) return {};
+    final res = await _api.get('/api/favorites/questions', query: {'bank_id': '$bankId'});
+    final raw = res['ids'];
+    return raw is List
+        ? raw.map((e) => int.tryParse('$e') ?? -1).where((e) => e > 0).toSet()
+        : <int>{};
+  }
+
+  Future<List<Map<String, dynamic>>> fetchFavoriteQuestions() async {
+    if (!AuthService.instance.isLoggedIn) return [];
+    final res = await _api.get('/api/favorites/questions');
+    final raw = res['items'];
+    return raw is List ? raw.whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList() : [];
+  }
+
+  Future<void> addQuestionFavorite(int questionId) async {
+    if (!AuthService.instance.isLoggedIn) throw Exception('未登录');
+    await _api.post('/api/favorites/questions', body: {'question_id': questionId});
+  }
+
+  Future<void> removeQuestionFavorite(int questionId) async {
+    if (!AuthService.instance.isLoggedIn) return;
+    await _api.delete('/api/favorites/questions/$questionId');
+  }
+
+  /// 我收到的留言（按时间倒序，最多 200 条）。
+  Future<List<Map<String, dynamic>>> fetchMessages() async {
+    if (!AuthService.instance.isLoggedIn) return [];
+    final res = await _api.get('/api/messages');
+    final raw = res['items'];
+    if (raw is List) {
+      return raw.whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList();
     }
+    return const [];
   }
 
-  /// 重置进度
-  Future<void> resetProgress({required String userId, required List<int> questionIds}) async {
-    if (questionIds.isEmpty) return;
-    await _client
-        .from('user_records')
-        .delete()
-        .eq('user_id', userId)
-        .inFilter('question_id', questionIds);
+  /// 删除收到的留言（带撤销时需重新插入）。
+  Future<void> deleteOwlMessage(int id) async {
+    await _api.delete('/api/messages/$id');
   }
 
-  /// 发送留言 (保持不变)
+  /// 撤销删除：把删掉那条的备份重新插回去。
+  Future<void> restoreOwlMessage(Map<String, dynamic> backup) async {
+    await _api.post('/api/messages/restore', body: {
+      'sender_id': backup['sender_id'],
+      'receiver_id': backup['receiver_id'],
+      'sender_nickname': backup['sender_nickname'],
+      'group_name': backup['group_name'],
+      'message_content': backup['message_content'],
+      'question_preview': backup['question_preview'],
+      'created_at': backup['created_at'],
+    });
+  }
+
+  /// 给出题人发留言（发信人由后端从 token 里取，不用前端传）。
   Future<void> sendOwlMessage({
-    required String senderId,
-    required String receiverId,
-    required String senderNickname,
+    required int receiverId,
     required String groupName,
     required String messageContent,
     required String questionContent,
   }) async {
-    await _client.from('author_messages').insert({
-      'sender_id': senderId,
+    await _api.post('/api/messages', body: {
       'receiver_id': receiverId,
-      'sender_nickname': senderNickname,
       'group_name': groupName,
       'message_content': messageContent,
-      'question_preview': questionContent.length > 50 
-          ? "${questionContent.substring(0, 50)}..." 
+      'question_preview': questionContent.length > 50
+          ? "${questionContent.substring(0, 50)}..."
           : questionContent,
     });
   }

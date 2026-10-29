@@ -1,148 +1,153 @@
 import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
-import 'exam_page.dart';
 
+import '../models/bank.dart';
+import '../services/bank_service.dart';
+import '../theme/app_colors.dart';
+import '../utils/error_text.dart';
+import '../widgets/async_view.dart';
+import 'bank_detail_page.dart';
+
+/// 藏书阁（我的收藏）。
+/// 修复：
+/// - 网络失败不再伪装成“暂无收藏”（统一四态）；
+/// - 未登录 / 收藏为空时不再永远转圈；
+/// - 移除收藏有撤销，不再一碰就没了；
+/// - 下拉刷新代替右上角“整页转圈”的刷新按钮。
 class LibraryPage extends StatefulWidget {
   const LibraryPage({super.key});
+
   @override
   State<LibraryPage> createState() => _LibraryPageState();
 }
 
 class _LibraryPageState extends State<LibraryPage> {
-  Map<String, List<Map<String, dynamic>>> _myLibrary = {};
-  bool _isLoading = true;
+  final BankService _bankService = BankService();
+
+  List<Bank> _banks = [];
+  Set<int> _favoriteIds = {};
+  AsyncStatus _status = AsyncStatus.loading;
+  String _errorText = '';
 
   @override
   void initState() {
     super.initState();
-    _fetchUserFavorites();
+    _load();
   }
 
-  Future<void> _fetchUserFavorites() async {
-    final user = Supabase.instance.client.auth.currentUser;
-    if (user == null) return;
-
+  Future<void> _load() async {
+    setState(() {
+      _status = AsyncStatus.loading;
+      _errorText = '';
+    });
     try {
-      // 1. 先查收藏了哪些试卷名
-      final List<dynamic> favResponse = await Supabase.instance.client
-          .from('favorites')
-          .select('group_name')
-          .eq('user_id', user.id);
-
-      if (favResponse.isEmpty) {
-        if (mounted) setState(() => _isLoading = false);
-        return;
-      }
-
-      List<String> myGroupNames = favResponse.map((e) => e['group_name'].toString()).toList();
-
-      // 2. 根据名字查具体题目
-      final List<dynamic> questionResponse = await Supabase.instance.client
-          .from('questions')
-          .select()
-          .inFilter('group_name', myGroupNames)
-          .order('created_at', ascending: false);
-
-      // 3. 组装数据
-      Map<String, List<Map<String, dynamic>>> tempGroup = {};
-      
-      for (var item in questionResponse) {
-        String groupName = item['group_name']?.toString() ?? "未知试卷";
-        
-        Map<String, dynamic> questionData = {
-          'id': item['id'], 
-          'question': item['question'].toString(),
-          'options': item['options'].toString(),
-          'answer': item['answer'].toString(),
-          // ✨✨✨ 关键补充：把作者ID带上，否则考场里没法发信！
-          'created_by': item['created_by']?.toString(),
-          // ✨✨✨ 顺便把试卷名也带上，作为信件的标题
-          'group_name': groupName,
-        };
-
-        if (!tempGroup.containsKey(groupName)) {
-          tempGroup[groupName] = [];
-        }
-        tempGroup[groupName]!.add(questionData);
-      }
-
-      if (mounted) {
-        setState(() {
-          _myLibrary = tempGroup;
-          _isLoading = false;
-        });
-      }
-
+      final banks = await _bankService.fetchFavoriteBanks();
+      final ids = await _bankService.fetchFavoriteIds();
+      if (!mounted) return;
+      setState(() {
+        _banks = banks;
+        _favoriteIds = ids;
+        _status = banks.isEmpty ? AsyncStatus.empty : AsyncStatus.data;
+      });
     } catch (e) {
-      if (mounted) setState(() => _isLoading = false);
+      if (!mounted) return;
+      setState(() {
+        _errorText = friendlyError(e);
+        _status = AsyncStatus.error;
+      });
     }
   }
 
-  Future<void> _removeFromLibrary(String groupName) async {
-    final user = Supabase.instance.client.auth.currentUser;
-    if (user == null) return;
-    
-    // 只是删除收藏记录，不动原始题库
-    await Supabase.instance.client
-        .from('favorites')
-        .delete()
-        .eq('user_id', user.id)
-        .eq('group_name', groupName);
-        
-    setState(() { 
-      _myLibrary.remove(groupName); 
+  /// 移除收藏：本地乐观移除 + SnackBar 撤销，不再一碰就永久消失。
+  Future<void> _removeFavorite(Bank bank) async {
+    setState(() {
+      _banks.removeWhere((b) => b.id == bank.id);
+      _favoriteIds.remove(bank.id);
     });
+    try {
+      await _bankService.removeFavorite(bank.id);
+    } catch (e) {
+      if (!mounted) return;
+      _restoreLocally(bank);
+      ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('移除失败：${friendlyError(e)}')));
+      return;
+    }
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text('已把《${bank.name}》移出藏书阁'),
+      action: SnackBarAction(
+        label: '撤销',
+        onPressed: () async {
+          try {
+            await _bankService.addFavorite(bank.id);
+            if (!mounted) return;
+            _restoreLocally(bank);
+          } catch (e) {
+            if (!mounted) return;
+            ScaffoldMessenger.of(context)
+                .showSnackBar(SnackBar(content: Text('恢复失败：${friendlyError(e)}')));
+          }
+        },
+      ),
+    ));
+  }
+
+  void _restoreLocally(Bank bank) {
+    setState(() {
+      if (!_banks.any((b) => b.id == bank.id)) _banks.add(bank);
+      _banks.sort((a, b) => b.id.compareTo(a.id));
+      _favoriteIds.add(bank.id);
+    });
+  }
+
+  /// 点题库先进「章节列表」，再挑一章开始练。
+  void _openBank(Bank bank) {
+    Navigator.push(context,
+        MaterialPageRoute(builder: (_) => BankDetailPage(bank: bank)));
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('藏书阁'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.refresh), 
-            onPressed: () { 
-              setState(() => _isLoading = true); 
-              _fetchUserFavorites(); 
-            }
-          )
-        ]
-      ),
-      body: _isLoading
-          ? const Center(child: CircularProgressIndicator())
-          : _myLibrary.isEmpty
-              ? const Center(child: Text("暂无收藏"))
-              : ListView.builder(
-                  padding: const EdgeInsets.all(16),
-                  itemCount: _myLibrary.length,
-                  itemBuilder: (context, index) {
-                    String groupName = _myLibrary.keys.elementAt(index);
-                    List<Map<String, dynamic>> questions = _myLibrary[groupName]!;
-                    
-                    return Card(
-                      margin: const EdgeInsets.only(bottom: 16),
-                      child: ListTile(
-                        leading: const Icon(Icons.book, color: Colors.blue),
-                        title: Text(groupName, style: const TextStyle(fontWeight: FontWeight.bold)),
-                        subtitle: Text("${questions.length} 道题"),
-                        trailing: IconButton(
-                          icon: const Icon(Icons.remove_circle_outline, color: Colors.red), 
-                          onPressed: () => _removeFromLibrary(groupName)
-                        ),
-                        onTap: () {
-                          // 直接传递整理好的数据 (已经包含了 created_by)
-                          Navigator.push(
-                            context, 
-                            MaterialPageRoute(
-                              builder: (context) => ExamPage(questions: questions)
-                            )
-                          );
-                        },
-                      ),
-                    );
-                  },
+      appBar: AppBar(title: const Text('藏书阁')),
+      body: RefreshIndicator(
+        onRefresh: _load,
+        child: AsyncView(
+          status: _status,
+          onRetry: _load,
+          emptyIcon: Icons.menu_book_outlined,
+          emptyText: '还没有收藏的题库\n去“搜索”页看看吧',
+          errorText: _errorText,
+          dataBuilder: (context) => ListView.builder(
+            physics: const AlwaysScrollableScrollPhysics(),
+            padding: const EdgeInsets.all(16),
+            itemCount: _banks.length,
+            itemBuilder: (context, index) {
+              final bank = _banks[index];
+              return Card(
+                child: ListTile(
+                  leading: CircleAvatar(
+                    backgroundColor: context.appColors.info.withValues(alpha: 0.12),
+                    child: Icon(Icons.menu_book, color: context.appColors.info),
+                  ),
+                  title: Text(bank.name,
+                      style: const TextStyle(fontWeight: FontWeight.bold)),
+                  subtitle: Text(bank.hasChapters
+                      ? '${bank.questionCount} 道题 · ${bank.chapterCount} 章 · ${bank.authorName}'
+                      : '${bank.questionCount} 道题 · ${bank.authorName}'),
+                  trailing: IconButton(
+                    tooltip: '移出藏书阁',
+                    icon: Icon(Icons.bookmark_remove_outlined,
+                        color: context.appColors.danger),
+                    onPressed: () => _removeFavorite(bank),
+                  ),
+                  onTap: () => _openBank(bank),
                 ),
+              );
+            },
+          ),
+        ),
+      ),
     );
   }
 }

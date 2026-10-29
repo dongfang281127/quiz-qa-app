@@ -1,9 +1,20 @@
 import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../services/auth_service.dart';
+import '../services/comment_service.dart';
+import '../theme/app_colors.dart';
+import '../utils/error_text.dart';
+import '../utils/time_text.dart';
+
+/// 讨论区。
+/// 修复：
+/// - 发送失败时移除乐观插入的假评论（之前会一直挂着）；
+/// - 翻题时清空未发送的草稿（之前 A 题草稿会发到 B 题）；
+/// - 评论限最近 50 条，避免一个 Column 无限撑高导致卡顿；
+/// - 删除按钮点击区放大到 48dp；时间用相对格式且对空值安全。
 class CommentSection extends StatefulWidget {
   final int questionId;
-  final bool isAnswerRevealed; // 父组件告诉我们，答案揭晓没？
+  final bool isAnswerRevealed;
 
   const CommentSection({
     super.key,
@@ -16,22 +27,26 @@ class CommentSection extends StatefulWidget {
 }
 
 class _CommentSectionState extends State<CommentSection> {
+  static const _limit = 50;
+
+  final CommentService _commentService = CommentService();
+
   List<Map<String, dynamic>> _comments = [];
   bool _isLoadingComments = false;
+  bool _isSending = false;
   final TextEditingController _commentController = TextEditingController();
 
   @override
   void initState() {
     super.initState();
-    // 一进来就加载评论
     _loadComments();
   }
 
-  // ✨✨✨ 核心：当父组件传来的 questionId 发生变化时（翻页了），重新加载评论
   @override
   void didUpdateWidget(covariant CommentSection oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.questionId != widget.questionId) {
+      _commentController.clear(); // 草稿不跨题携带
       _loadComments();
     }
   }
@@ -42,178 +57,183 @@ class _CommentSectionState extends State<CommentSection> {
     super.dispose();
   }
 
-  // --- 逻辑部分 (直接从 ExamPage 搬过来的) ---
-
   Future<void> _loadComments() async {
     setState(() => _isLoadingComments = true);
     try {
-      final response = await Supabase.instance.client
-          .from('question_comments')
-          .select()
-          .eq('question_id', widget.questionId)
-          .order('created_at', ascending: false);
-
+      final rows = await _commentService.fetchComments(widget.questionId);
       if (mounted) {
         setState(() {
-          _comments = List<Map<String, dynamic>>.from(response);
+          _comments = rows;
           _isLoadingComments = false;
         });
       }
     } catch (e) {
-      if (mounted) setState(() => _isLoadingComments = false);
+      if (mounted) {
+        setState(() => _isLoadingComments = false);
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('评论加载失败：${friendlyError(e)}')));
+      }
     }
   }
 
   Future<void> _sendComment() async {
     final text = _commentController.text.trim();
-    if (text.isEmpty) return;
-
-    final user = Supabase.instance.client.auth.currentUser;
-    if (user == null) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('请先登录才能评论')));
+    if (text.isEmpty || _isSending) return;
+    if (text.length > 500) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('评论太长了（最多 500 字）')));
       return;
     }
 
-    String nickname = user.userMetadata?['display_name'] ?? "神秘巫师";
+    if (!AuthService.instance.isLoggedIn) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('请先登录才能评论')));
+      return;
+    }
+
+    final nickname = AuthService.instance.nickname;
+
+    final optimistic = <String, dynamic>{
+      'user_nickname': nickname,
+      'content': text,
+      'created_at': DateTime.now().toIso8601String(),
+      'user_id': AuthService.instance.userId ?? -1,
+      'id': -1,
+    };
+
+    setState(() {
+      _isSending = true;
+      _comments.insert(0, optimistic);
+      _commentController.clear();
+      FocusScope.of(context).unfocus();
+    });
 
     try {
-      // 乐观更新
-      Map<String, dynamic> newComment = {
-        'user_nickname': nickname,
-        'content': text,
-        'created_at': DateTime.now().toIso8601String(),
-        'user_id': user.id,
-        'id': -1, // 临时ID
-      };
-
-      setState(() {
-        _comments.insert(0, newComment);
-        _commentController.clear();
-        FocusScope.of(context).unfocus();
-      });
-
-      await Supabase.instance.client.from('question_comments').insert({
-        'question_id': widget.questionId,
-        'user_id': user.id,
-        'content': text,
-        'user_nickname': nickname,
-      });
-
-      _loadComments(); // 刷新获取真实ID
+      await _commentService.addComment(
+        questionId: widget.questionId,
+        content: text,
+      );
+      await _loadComments();
     } catch (e) {
+      // 发送失败：移除假评论，让用户看到这条没发出去
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('发送失败: $e')));
+        setState(() => _comments.removeWhere((c) => c['id'] == -1));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('发送失败：${friendlyError(e)}')));
       }
+    } finally {
+      if (mounted) setState(() => _isSending = false);
     }
   }
 
   Future<void> _deleteComment(int commentId, int index) async {
-    bool? confirm = await showDialog<bool>(
+    final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('删除评论'),
-        content: const Text('确定要撤回这条消息吗？'),
+        content: const Text('确定要撤回这条评论吗？'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
           TextButton(
             onPressed: () => Navigator.pop(context, true),
-            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            style: TextButton.styleFrom(foregroundColor: context.appColors.danger),
             child: const Text('删除'),
           ),
         ],
       ),
     );
+    if (confirmed != true) return;
 
-    if (confirm != true) return;
-
+    final backup = Map<String, dynamic>.from(_comments[index]);
+    setState(() => _comments.removeAt(index));
     try {
-      setState(() {
-        _comments.removeAt(index);
-      });
-
       if (commentId != -1) {
-        await Supabase.instance.client
-            .from('question_comments')
-            .delete()
-            .eq('id', commentId);
+        await _commentService.deleteComment(commentId);
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('删除失败')));
-        _loadComments();
+        setState(() {
+          if (index <= _comments.length) _comments.insert(index, backup);
+        });
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('删除失败：${friendlyError(e)}')));
       }
     }
   }
 
-  // --- UI 部分 ---
-
   @override
   Widget build(BuildContext context) {
-    // 1. 如果没揭晓答案，显示“赤胆忠心咒”锁定界面
+    final theme = Theme.of(context);
+
     if (!widget.isAnswerRevealed) {
       return Container(
         padding: const EdgeInsets.all(30),
         width: double.infinity,
         decoration: BoxDecoration(
-          color: Colors.grey.withOpacity(0.05),
+          color: theme.colorScheme.outline.withValues(alpha: 0.05),
           borderRadius: BorderRadius.circular(15),
-          border: Border.all(color: Colors.grey.withOpacity(0.2)),
+          border: Border.all(color: theme.colorScheme.outline.withValues(alpha: 0.2)),
         ),
         child: Column(
           children: [
-            const Icon(Icons.lock_outline, size: 40, color: Colors.grey),
+            Icon(Icons.lock_outline, size: 40, color: theme.colorScheme.outline),
             const SizedBox(height: 10),
-            Text(
-              "尘封思绪，待君破局\n答题后解锁",
-              textAlign: TextAlign.center,
-              style: TextStyle(color: Colors.grey[600]),
-            ),
+            Text('尘封思绪，待君破局\n答题后解锁',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: theme.colorScheme.outline)),
           ],
         ),
       );
     }
 
-    // 2. 如果揭晓了，显示正常的评论列表
-    bool isDark = Theme.of(context).brightness == Brightness.dark;
-    String currentUserId = Supabase.instance.client.auth.currentUser?.id ?? "";
+    final currentUserId = AuthService.instance.userId;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text("讨论区", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+        Row(
+          children: [
+            const Text('讨论区',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            const SizedBox(width: 8),
+            Text('最近 $_limit 条',
+                style: TextStyle(fontSize: 11, color: theme.colorScheme.outline)),
+          ],
+        ),
         const SizedBox(height: 10),
-
         if (_isLoadingComments)
-          const Center(child: Padding(padding: EdgeInsets.all(20), child: CircularProgressIndicator()))
-        else if (_comments.isEmpty)
+          const Center(
+              child: Padding(
+                  padding: EdgeInsets.all(20),
+                  child: CircularProgressIndicator())),
+        if (!_isLoadingComments && _comments.isEmpty)
           Container(
             padding: const EdgeInsets.all(20),
             width: double.infinity,
             decoration: BoxDecoration(
-              color: Colors.grey.withOpacity(0.1),
+              color: theme.colorScheme.outline.withValues(alpha: 0.08),
               borderRadius: BorderRadius.circular(10),
             ),
-            child: const Text(
-              "还没有人讨论这道题，来抢沙发！",
-              textAlign: TextAlign.center,
-              style: TextStyle(color: Colors.grey),
-            ),
+            child: Text('还没有人讨论这道题，来抢沙发！',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: theme.colorScheme.outline)),
           )
-        else
+        else if (!_isLoadingComments)
           ..._comments.asMap().entries.map((entry) {
-            int idx = entry.key;
-            var c = entry.value;
-            String rawTime = c['created_at']?.toString() ?? "";
-            String timeStr = rawTime.length > 10 ? rawTime.substring(0, 10) : rawTime;
-            bool isMine = c['user_id'] == currentUserId;
+            final idx = entry.key;
+            final c = entry.value;
+            final timeStr = formatRelative(c['created_at']);
+            final isMine = currentUserId != null &&
+                (c['user_id'] as num?)?.toInt() == currentUserId;
+            final isPending = c['id'] == -1;
 
             return Container(
               margin: const EdgeInsets.only(bottom: 10),
               padding: const EdgeInsets.all(10),
               decoration: BoxDecoration(
-                color: Theme.of(context).cardColor,
+                color: theme.cardColor,
                 borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: Colors.grey.withOpacity(0.1)),
+                border: Border.all(color: theme.dividerColor),
               ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -222,68 +242,83 @@ class _CommentSectionState extends State<CommentSection> {
                     children: [
                       CircleAvatar(
                         radius: 10,
-                        backgroundColor: isMine ? Colors.green.withOpacity(0.2) : Colors.purple.withOpacity(0.2),
-                        child: Icon(Icons.person, size: 12, color: isMine ? Colors.green : Colors.purple),
+                        backgroundColor: isMine
+                            ? context.appColors.success.withValues(alpha: 0.2)
+                            : context.appColors.warning.withValues(alpha: 0.2),
+                        child: Icon(Icons.person,
+                            size: 12,
+                            color: isMine
+                                ? context.appColors.success
+                                : context.appColors.warning),
                       ),
                       const SizedBox(width: 5),
-                      Text(
-                        isMine ? "${c['user_nickname']} (我)" : (c['user_nickname'] ?? "匿名"),
-                        style: TextStyle(
-                          fontWeight: FontWeight.bold,
-                          fontSize: 12,
-                          color: isMine ? Colors.green : null,
+                      Expanded(
+                        child: Text(
+                          '${c['user_nickname'] ?? '匿名'}${isMine ? ' (我)' : ''}',
+                          style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 12,
+                              color: isMine ? context.appColors.success : null),
                         ),
                       ),
-                      const Spacer(),
-                      Text(timeStr, style: const TextStyle(color: Colors.grey, fontSize: 10)),
-                      if (isMine)
-                        GestureDetector(
-                          onTap: () => _deleteComment(c['id'], idx),
-                          child: const Padding(
-                            padding: EdgeInsets.only(left: 8.0),
-                            child: Icon(Icons.delete_outline, size: 16, color: Colors.red),
+                      Text(isPending ? '发送中…' : timeStr,
+                          style: TextStyle(
+                              color: theme.colorScheme.outline, fontSize: 10)),
+                      if (isMine && !isPending)
+                        SizedBox(
+                          width: 32,
+                          height: 32,
+                          child: IconButton(
+                            padding: EdgeInsets.zero,
+                            tooltip: '删除这条评论',
+                            iconSize: 16,
+                            onPressed: () => _deleteComment(c['id'], idx),
+                            icon: Icon(Icons.delete_outline,
+                                color: context.appColors.danger),
                           ),
                         ),
                     ],
                   ),
                   const SizedBox(height: 5),
-                  Text(c['content'] ?? "", style: const TextStyle(fontSize: 14)),
+                  SelectableText(c['content']?.toString() ?? '',
+                      style: const TextStyle(fontSize: 14)),
                 ],
               ),
             );
-          }).toList(),
-
+          }),
         const SizedBox(height: 10),
-        
-        // 发送输入框
         Row(
           children: [
             Expanded(
               child: TextField(
                 controller: _commentController,
-                onChanged: (val) => setState(() {}),
+                maxLength: 500,
+                onChanged: (_) => setState(() {}),
                 decoration: InputDecoration(
-                  hintText: "写下你的见解...",
-                  contentPadding: const EdgeInsets.symmetric(horizontal: 15, vertical: 10),
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(20)),
-                  filled: true,
-                  fillColor: isDark ? Colors.grey[800] : Colors.grey[100],
+                  hintText: '写下你的见解...',
+                  counterText: '',
+                  contentPadding:
+                      const EdgeInsets.symmetric(horizontal: 15, vertical: 10),
+                  border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(20)),
                 ),
               ),
             ),
             const SizedBox(width: 10),
-            GestureDetector(
-              onTap: _sendComment,
-              child: Container(
-                width: 45,
-                height: 45,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: _commentController.text.trim().isEmpty
-                      ? Colors.grey
-                      : Theme.of(context).primaryColor,
-                ),
-                child: const Icon(Icons.send, color: Colors.white, size: 20),
+            SizedBox(
+              width: 45,
+              height: 45,
+              child: IconButton.filled(
+                onPressed:
+                    _commentController.text.trim().isEmpty || _isSending
+                        ? null
+                        : _sendComment,
+                icon: _isSending
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2))
+                    : const Icon(Icons.send, size: 20),
               ),
             ),
           ],
